@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Play short videos based on video"
+    },
+    {
+      "name": "fast_forwarding",
+      "value": " 2.0X fast forwarding"
+    },
+    {
+      "name": "read_media_permission_reason",
+      "value": "需要读取媒体文件以导入视频"
+    },
+    {
+      "name": "media_location_permission_reason",
+      "value": "需要访问媒体文件位置信息"
+    },
+    {
+      "name": "write_media_permission_reason",
+      "value": "需要写入媒体文件以生成缩略图"
+    }
+  ]
+}

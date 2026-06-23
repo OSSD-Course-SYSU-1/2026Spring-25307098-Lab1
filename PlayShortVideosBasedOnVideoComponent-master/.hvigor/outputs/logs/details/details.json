@@ -1,0 +1,51 @@
+{
+  "HVIGOR_OHOS_PLUGIN": {
+    "MODULES": [
+      {
+        "MODULE_NAME": "923fe53966c6cd9343e11af776cd4b05be315ea4b200b02e4d5dfb0f929b73bf",
+        "API_TYPE": "stageMode",
+        "INCLUDE_IN_BUILD": true,
+        "IS_COMMAND_LINE_ENTRY_MODULE": true,
+        "MODULE_TYPE": "entry",
+        "IS_INCREMENTAL_MODULE": true
+      }
+    ],
+    "NATIVE_COMPILER": "Default",
+    "IS_FULL_BUILD": false,
+    "BUILD_MODE": "debug"
+  },
+  "HVIGOR": {
+    "IS_INCREMENTAL": true,
+    "IS_DAEMON": true,
+    "IS_PARALLEL": true,
+    "IS_HVIGORFILE_TYPE_CHECK": false,
+    "TASK_TIME": {
+      "923fe53966c6cd9343e11af776cd4b05be315ea4b200b02e4d5dfb0f929b73bf": {
+        "CreateModuleInfo": 366200,
+        "ConfigureCmake": 156400,
+        "PreCheckSyscap": 190700,
+        "ProcessIntegratedHsp": 314700,
+        "BuildNativeWithCmake": 137000,
+        "SyscapTransform": 1077000,
+        "ProcessStartupConfig": 886700,
+        "BuildNativeWithNinja": 259000,
+        "BuildJS": 1283600,
+        "ProcessCompiledResources": 304800,
+        "PackingCheck": 2100300,
+        "SignHap": 625800,
+        "CollectDebugSymbol": 436200,
+        "assembleHap": 105200
+      }
+    },
+    "APIS": [
+      "getProperty"
+    ],
+    "CONFIG_EXPERIMENT": {
+      "ENABLE_MODULE_SKIP": false,
+      "ENABLE_CPP_FUNCTION_LEVEL_INCREMENTAL": false
+    },
+    "CONFIG_PROPERTIES": {},
+    "TOTAL_TIME": 121292600,
+    "BUILD_ID": "202606091804086870"
+  }
+}
