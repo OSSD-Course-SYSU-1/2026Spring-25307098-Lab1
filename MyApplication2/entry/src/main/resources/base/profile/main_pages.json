@@ -1,0 +1,6 @@
+{
+  "src": [
+    "pages/MainMenu",
+    "pages/GameView"
+  ]
+}

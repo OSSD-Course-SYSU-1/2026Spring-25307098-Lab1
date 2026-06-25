@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "弹球游戏"
+    },
+    {
+      "name": "distributed_datasync_reason",
+      "value": "For game state transfer between devices"
+    }
+  ]
+}

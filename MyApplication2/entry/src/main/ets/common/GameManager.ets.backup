@@ -1,0 +1,1205 @@
+﻿import {
+  GameConfig,
+  GameMode,
+  GameState,
+  PlayerSide,
+  Direction,
+  BallState,
+  BulletState,
+  PaddleState,
+  PlayerState,
+  GameData,
+  BlockEvent
+} from './GameConfig';
+
+/**
+ * 流转数据接口
+ */
+interface ContinuationData {
+  gameMode: GameMode;
+  gameState: GameState;
+  ball: BallState;
+  playerBottom: PlayerState;
+  playerTop?: PlayerState;
+  timeLeft: number;
+  isWin: boolean;
+  winner?: PlayerSide;
+  screenWidth: number;
+  screenHeight: number;
+  timestamp: number;
+}
+
+// 静态字段存储流转数据
+let continuationData: Object | null = null;
+
+/**
+ * 游戏管理类 - 单例模式
+ * 负责管理所有游戏实体和游戏逻辑
+ */
+export class GameManager {
+  private static instance: GameManager | null = null;
+  
+  // ==================== 游戏数据 ====================
+  /** 游戏数据 */
+  private gameData: GameData;
+  
+  /** 屏幕宽度 */
+  private screenWidth: number = GameConfig.SCREEN_WIDTH;
+  
+  /** 屏幕高度 */
+  private screenHeight: number = GameConfig.SCREEN_HEIGHT;
+
+  // ==================== AI控制相关属性 ====================
+  /** AI上次发射子弹的时间 */
+  private aiLastShotTime: number = 0;
+  
+  /** AI下次发射的延迟时间（毫秒） */
+  private aiNextShotDelay: number = 0;
+  
+  /** AI是否正在等待发射 */
+  private aiIsWaitingToShoot: boolean = false;
+
+  // ==================== 格挡事件（用于视觉反馈） ====================
+  /** 格挡成功事件 */
+  private blockSuccessEvent: BlockEvent | null = null;
+
+  /**
+   * 私有构造函数 - 单例模式
+   */
+  private constructor() {
+    this.gameData = this.createInitialGameData(GameMode.Single);
+    
+    // 初始化AI控制属性
+    this.aiLastShotTime = 0;
+    this.aiNextShotDelay = 0;
+    this.aiIsWaitingToShoot = false;
+  }
+
+  /**
+   * 获取单例实例
+   */
+  public static getInstance(): GameManager {
+    if (GameManager.instance === null) {
+      GameManager.instance = new GameManager();
+    }
+    return GameManager.instance;
+  }
+
+  /**
+   * 销毁单例
+   */
+  public static destroyInstance(): void {
+    if (GameManager.instance !== null) {
+      GameManager.instance = null;
+    }
+  }
+
+  // ==================== 初始化方法 ====================
+
+  /**
+   * 创建初始游戏数据
+   */
+  private createInitialGameData(mode: GameMode): GameData {
+    const centerX = this.screenWidth / 2;
+    
+    // 创建下方玩家
+    const playerBottom: PlayerState = {
+      side: PlayerSide.Bottom,
+      score: 0,
+      chargeCount: 0,
+      bulletCount: GameConfig.BULLET_MAX_COUNT,
+      paddle: {
+        x: centerX - GameConfig.PADDLE_WIDTH / 2,
+        y: this.screenHeight - 40 - GameConfig.PADDLE_HEIGHT,
+        width: GameConfig.PADDLE_WIDTH,
+        height: GameConfig.PADDLE_HEIGHT,
+        side: PlayerSide.Bottom,
+        prevX: centerX - GameConfig.PADDLE_WIDTH / 2,
+        prevY: this.screenHeight - 40 - GameConfig.PADDLE_HEIGHT,
+        vx: 0,
+        vy: 0
+      },
+      bullets: [],
+      lastBlockTime: 0,
+      blockWindowActive: false,
+      blockWindowStartTime: 0,
+      touchCount: 0
+    };
+
+    // 创建上方玩家（双人模式和单人模式都需要）
+    // 单人模式下上方玩家由AI控制
+    const playerTop: PlayerState = {
+      side: PlayerSide.Top,
+      score: 0,
+      chargeCount: 0,
+      bulletCount: GameConfig.BULLET_MAX_COUNT,
+      paddle: {
+        x: centerX - GameConfig.PADDLE_WIDTH / 2,
+        y: 40,
+        width: GameConfig.PADDLE_WIDTH,
+        height: GameConfig.PADDLE_HEIGHT,
+        side: PlayerSide.Top,
+        prevX: centerX - GameConfig.PADDLE_WIDTH / 2,
+        prevY: 40,
+        vx: 0,
+        vy: 0
+      },
+      bullets: [],
+      lastBlockTime: 0,
+      blockWindowActive: false,
+      blockWindowStartTime: 0,
+      touchCount: 0
+    };
+
+    // 创建弹球
+    const ball: BallState = {
+      x: centerX,
+      y: this.screenHeight / 2,
+      vx: 0,
+      vy: 0,
+      radius: GameConfig.BALL_RADIUS,
+      active: false,
+      invincible: false,
+      invincibleStartTime: 0
+    };
+
+    return {
+      mode: mode,
+      state: GameState.Paused,
+      ball: ball,
+      playerBottom: playerBottom,
+      playerTop: playerTop,
+      timeLeft: GameConfig.GAME_DURATION,
+      isWin: false,
+      winner: undefined
+    };
+  }
+
+  /**
+   * 创建初始弹球状态
+   */
+  private createInitialBall(): BallState {
+    return {
+      x: this.screenWidth / 2,
+      y: this.screenHeight / 2,
+      vx: 0,
+      vy: 0,
+      radius: GameConfig.BALL_RADIUS,
+      active: false,
+      invincible: false,
+      invincibleStartTime: 0
+    };
+  }
+
+  // ==================== 游戏控制方法 ====================
+
+  /**
+   * 重置游戏 - 完全重新开始
+   */
+  public resetGame(mode: GameMode = GameMode.Single): void {
+    this.gameData = this.createInitialGameData(mode);
+    this.gameData.state = GameState.Paused;
+  }
+
+  /**
+   * 重置回合 - 弹球从中心随机发射
+   */
+  /**
+   * 重置回合（弹球出界时调用）
+   * 仅重置弹球位置，不清除充能和子弹
+   */
+  public resetRound(): void {
+    const centerX = this.screenWidth / 2;
+    const centerY = this.screenHeight / 2;
+    
+    // 随机发射角度 (0-360度)
+    const angle = Math.random() * Math.PI * 2;
+    const speed = GameConfig.BALL_BASE_SPEED;
+    
+    this.gameData.ball = {
+      x: centerX,
+      y: centerY,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius: GameConfig.BALL_RADIUS,
+      active: true,
+      invincible: false,
+      invincibleStartTime: 0
+    };
+    
+    // 注意：不清除充能计数，不销毁子弹（子弹继续飞行）
+  }
+  
+  /**
+   * 立即重置弹球（子弹击中弹球时调用）
+   * 从中心随机方向以基准速率发射，并设置短暂无敌
+   */
+  private resetBallImmediately(): void {
+    const centerX = this.screenWidth / 2;
+    const centerY = this.screenHeight / 2;
+    
+    // 随机发射角度 (0-360度)
+    const angle = Math.random() * Math.PI * 2;
+    const speed = GameConfig.BALL_BASE_SPEED;
+    
+    this.gameData.ball = {
+      x: centerX,
+      y: centerY,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius: GameConfig.BALL_RADIUS,
+      active: true,
+      invincible: true,
+      invincibleStartTime: Date.now()
+    };
+  }
+
+  /**
+   * 开始游戏
+   */
+  public startGame(): void {
+    if (this.gameData.state === GameState.Paused) {
+      this.gameData.state = GameState.Playing;
+      this.resetRound();
+    }
+  }
+
+  /**
+   * 暂停游戏
+   */
+  public pauseGame(): void {
+    if (this.gameData.state === GameState.Playing) {
+      this.gameData.state = GameState.Paused;
+    }
+  }
+
+  /**
+   * 继续游戏
+   */
+  public resumeGame(): void {
+    if (this.gameData.state === GameState.Paused && this.gameData.ball.active) {
+      this.gameData.state = GameState.Playing;
+    }
+  }
+
+  /**
+   * 结束游戏
+   */
+  public endGame(winner?: PlayerSide): void {
+    this.gameData.state = GameState.GameOver;
+    this.gameData.isWin = true;
+    this.gameData.winner = winner;
+    this.gameData.ball.active = false;
+  }
+
+  // ==================== 物理更新方法 ====================
+
+  /**
+   * 更新物理 - 主更新循环
+   */
+  public updatePhysics(deltaTime: number): void {
+    if (this.gameData.state !== GameState.Playing || !this.gameData.ball.active) {
+      return;
+    }
+
+    // 时间限制已移除 - 游戏不再有时间限制
+
+    // 更新格挡窗口状态
+    this.updateBlockWindows();
+    
+    // 更新弹球无敌状态
+    this.updateBallInvincibility();
+    
+    // 更新弹球位置
+    this.updateBallPosition(deltaTime);
+    
+    // 更新子弹位置
+    this.updateBulletsPosition(deltaTime);
+    
+    // 在单人模式下控制AI上挡板
+    if (this.gameData.mode === GameMode.Single) {
+      this.updateAI(deltaTime);
+    }
+    
+    // 处理碰撞
+    this.handleCollisions();
+    
+    // 检查胜利条件
+    this.checkWinCondition();
+  }
+
+  /**
+   * 更新弹球位置
+   */
+  private updateBallPosition(deltaTime: number): void {
+    const ball = this.gameData.ball;
+    
+    // 更新位置
+    ball.x += ball.vx * deltaTime;
+    ball.y += ball.vy * deltaTime;
+
+    // 左右边界碰撞
+    if (ball.x - ball.radius <= 0) {
+      ball.x = ball.radius;
+      ball.vx = Math.abs(ball.vx);
+    } else if (ball.x + ball.radius >= this.screenWidth) {
+      ball.x = this.screenWidth - ball.radius;
+      ball.vx = -Math.abs(ball.vx);
+    }
+    
+    // 上下边界检测（非挡板区域碰撞）
+    this.handleBallBoundaryCollision();
+  }
+  
+  /**
+   * 处理弹球与上下边界碰撞（非挡板区域）
+   * 如果弹球超出边界且不在挡板范围内，对方得分
+   */
+  private handleBallBoundaryCollision(): void {
+    const ball = this.gameData.ball;
+    
+    // 检查是否超出上边界
+    if (ball.y - ball.radius <= 0) {
+      // 检查是否在上方挡板范围内
+      if (this.gameData.playerTop && this.isBallInPaddleRange(ball, this.gameData.playerTop.paddle)) {
+        // 挡板接住，正常反弹（由 handlePaddleCollision 处理）
+        return;
+      }
+      // 未被挡板接住，下方玩家得分
+      this.gameData.playerBottom.score++;
+      this.resetRound();
+      return;
+    }
+    
+    // 检查是否超出下边界
+    if (ball.y + ball.radius >= this.screenHeight) {
+      // 检查是否在下方挡板范围内
+      if (this.isBallInPaddleRange(ball, this.gameData.playerBottom.paddle)) {
+        // 挡板接住，正常反弹（由 handlePaddleCollision 处理）
+        return;
+      }
+      // 未被挡板接住，上方玩家得分
+      if (this.gameData.playerTop) {
+        this.gameData.playerTop.score++;
+      }
+      this.resetRound();
+    }
+  }
+  
+  /**
+   * 检查弹球是否在挡板的水平范围内
+   */
+  private isBallInPaddleRange(ball: BallState, paddle: PaddleState): boolean {
+    return ball.x >= paddle.x && ball.x <= paddle.x + paddle.width;
+  }
+
+  /**
+   * 更新子弹位置
+   */
+  private updateBulletsPosition(deltaTime: number): void {
+    // 更新下方玩家子弹
+    this.gameData.playerBottom.bullets = this.gameData.playerBottom.bullets.filter((bullet: BulletState) => {
+      if (!bullet.active) return false;
+      
+      bullet.x += bullet.vx * deltaTime;
+      bullet.y += bullet.vy * deltaTime;
+      
+      // 出界检测
+      if (bullet.y - bullet.radius <= 0 || bullet.y + bullet.radius >= this.screenHeight) {
+        return false;
+      }
+      return true;
+    });
+
+    // 更新上方玩家子弹（双人模式）
+    if (this.gameData.playerTop) {
+      this.gameData.playerTop.bullets = this.gameData.playerTop.bullets.filter((bullet: BulletState) => {
+        if (!bullet.active) return false;
+        
+        bullet.x += bullet.vx * deltaTime;
+        bullet.y += bullet.vy * deltaTime;
+        
+        // 出界检测
+        if (bullet.y - bullet.radius <= 0 || bullet.y + bullet.radius >= this.screenHeight) {
+          return false;
+        }
+        return true;
+      });
+    }
+  }
+
+  // ==================== 碰撞处理方法 ====================
+
+  /**
+   * 处理碰撞
+   */
+  private handleCollisions(): void {
+    const ball = this.gameData.ball;
+    
+    // 弹球与下方挡板碰撞
+    this.handlePaddleCollision(ball, this.gameData.playerBottom);
+    
+    // 弹球与上方挡板碰撞（双人模式）
+    if (this.gameData.playerTop) {
+      this.handlePaddleCollision(ball, this.gameData.playerTop);
+    }
+    
+    // 子弹与弹球碰撞
+    this.handleBulletCollisions();
+    
+    // 子弹与挡板碰撞（格挡检测）
+    this.handleBulletPaddleCollisions();
+  }
+
+  /**
+   * 处理弹球与挡板碰撞
+   * 实现完整的动量系统
+   */
+  private handlePaddleCollision(ball: BallState, player: PlayerState): void {
+    const paddle = player.paddle;
+    
+    // 检测碰撞
+    if (this.isBallPaddleColliding(ball, paddle)) {
+      // 检查格挡窗口：如果激活，防守方减1分
+      if (player.blockWindowActive) {
+        player.score = Math.max(0, player.score - 1); // 防止负分
+        player.blockWindowActive = false; // 清除窗口标志，避免重复惩罚
+      }
+      
+      // ===== 动量系统 =====
+      
+      // 1. 获取挡板速度
+      const vpx = paddle.vx;
+      const vpy = paddle.vy;
+      
+      // 2. 计算相对速度
+      const rel_vx = ball.vx - vpx;
+      const rel_vy = ball.vy - vpy;
+      
+      // 3. 反弹法向为垂直方向，更新垂直速度（弹性系数=1）
+      // ball.vy = vpy - rel_vy 等价于 ball.vy = 2*vpy - ball.vy
+      ball.vy = vpy - rel_vy;
+      
+      // 4. 水平动量传递
+      // ball.vx = vpx + rel_vx 等价于 ball.vx = 2*vpx - ball.vx
+      ball.vx = vpx + rel_vx;
+      
+      // 5. 偏移调制
+      // 计算撞击点偏移率 offset = (ball.x - paddle_center) / (paddle.width/2)，限制在[-1,1]
+      const paddleCenter = paddle.x + paddle.width / 2;
+      let offset = (ball.x - paddleCenter) / (paddle.width / 2);
+      offset = Math.max(-1, Math.min(1, offset)); // 限制在[-1,1]
+      ball.vx += offset * GameConfig.OFFSET_MODULATION;
+      
+      // 6. 速度标准化
+      const currentSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+      if (currentSpeed > 0 && Math.abs(currentSpeed - GameConfig.BALL_BASE_SPEED) > 0.1) {
+        const scale = GameConfig.BALL_BASE_SPEED / currentSpeed;
+        ball.vx *= scale;
+        ball.vy *= scale;
+      }
+      
+      // 7. 触球计数与充能
+      player.touchCount++;
+      if (player.touchCount >= GameConfig.CHARGE_COUNT) {
+        // 子弹数+1（不超过上限）
+        player.bulletCount = Math.min(player.bulletCount + 1, GameConfig.BULLET_MAX_COUNT);
+        player.touchCount = 0;
+      }
+      
+      // 8. 修正弹球位置防止重叠
+      if (paddle.side === PlayerSide.Bottom) {
+        // 下方挡板：弹球在挡板上方
+        ball.y = paddle.y - ball.radius;
+        // 确保垂直速度向上
+        if (ball.vy > 0) ball.vy = -ball.vy;
+      } else {
+        // 上方挡板：弹球在挡板下方
+        ball.y = paddle.y + paddle.height + ball.radius;
+        // 确保垂直速度向下
+        if (ball.vy < 0) ball.vy = -ball.vy;
+      }
+    }
+  }
+
+  /**
+   * 检测弹球与挡板是否碰撞
+   */
+  private isBallPaddleColliding(ball: BallState, paddle: PaddleState): boolean {
+    const closestX = Math.max(paddle.x, Math.min(ball.x, paddle.x + paddle.width));
+    const closestY = Math.max(paddle.y, Math.min(ball.y, paddle.y + paddle.height));
+    
+    const distanceX = ball.x - closestX;
+    const distanceY = ball.y - closestY;
+    const distanceSquared = distanceX * distanceX + distanceY * distanceY;
+    
+    return distanceSquared < ball.radius * ball.radius;
+  }
+
+  /**
+   * 处理子弹与弹球碰撞
+   */
+  private handleBulletCollisions(): void {
+    const ball = this.gameData.ball;
+    
+    // 弹球无敌时不处理碰撞
+    if (ball.invincible) return;
+    
+    // 检查下方玩家子弹
+    for (const bullet of this.gameData.playerBottom.bullets) {
+      if (!bullet.active) continue;
+      
+      if (this.isBulletBallColliding(bullet, ball)) {
+        // 攻击方（下方玩家）减1分
+        this.gameData.playerBottom.score = Math.max(0, this.gameData.playerBottom.score - 1);
+        bullet.active = false;
+        this.resetBallImmediately();
+        return;
+      }
+    }
+    
+    // 检查上方玩家子弹
+    if (this.gameData.playerTop) {
+      for (const bullet of this.gameData.playerTop.bullets) {
+        if (!bullet.active) continue;
+        
+        if (this.isBulletBallColliding(bullet, ball)) {
+          // 攻击方（上方玩家）减1分
+          this.gameData.playerTop!.score = Math.max(0, this.gameData.playerTop!.score - 1);
+          bullet.active = false;
+          this.resetBallImmediately();
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * 处理子弹与挡板碰撞（格挡检测）
+   */
+  /**
+   * 处理子弹与挡板碰撞（格挡检测）
+   * 遍历子弹数组，检查是否与对方挡板碰撞
+   * - 格挡成功：销毁子弹，防守方+1子弹，不扣分
+   * - 未格挡：销毁子弹，攻击方+1分
+   */
+  private handleBulletPaddleCollisions(): void {
+    // 检查上方玩家子弹是否击中下方玩家挡板
+    if (this.gameData.playerTop) {
+      this.gameData.playerTop.bullets.forEach((bullet: BulletState) => {
+        if (!bullet.active) return;
+        
+        if (this.isBulletPaddleColliding(bullet, this.gameData.playerBottom.paddle)) {
+          // 子弹击中下方挡板
+          bullet.active = false; // 销毁子弹
+          
+          if (this.gameData.playerBottom.blockWindowActive) {
+            // 格挡成功：防守方+1子弹（不超过上限），不扣分
+            this.gameData.playerBottom.bulletCount = 
+              Math.min(this.gameData.playerBottom.bulletCount + 1, GameConfig.BULLET_MAX_COUNT);
+            this.gameData.playerBottom.blockWindowActive = false; // 清除窗口标志
+            // 记录格挡成功事件（用于视觉反馈）
+            const bottomBlockEvent: BlockEvent = {
+              side: PlayerSide.Bottom,
+              x: bullet.x,
+              y: bullet.y,
+              timestamp: Date.now()
+            };
+            this.blockSuccessEvent = bottomBlockEvent;
+          } else {
+            // 未格挡：攻击方（上方玩家）+1分
+            this.gameData.playerTop!.score++;
+          }
+        }
+      });
+    }
+    
+    // 检查下方玩家子弹是否击中上方玩家挡板
+    this.gameData.playerBottom.bullets.forEach((bullet: BulletState) => {
+      if (!bullet.active) return;
+      
+      if (this.gameData.playerTop && 
+          this.isBulletPaddleColliding(bullet, this.gameData.playerTop!.paddle)) {
+        // 子弹击中上方挡板
+        bullet.active = false; // 销毁子弹
+        
+        if (this.gameData.playerTop!.blockWindowActive) {
+          // 格挡成功：防守方+1子弹（不超过上限），不扣分
+          this.gameData.playerTop!.bulletCount = 
+            Math.min(this.gameData.playerTop!.bulletCount + 1, GameConfig.BULLET_MAX_COUNT);
+          this.gameData.playerTop!.blockWindowActive = false; // 清除窗口标志
+          // 记录格挡成功事件（用于视觉反馈）
+          const topBlockEvent: BlockEvent = {
+            side: PlayerSide.Top,
+            x: bullet.x,
+            y: bullet.y,
+            timestamp: Date.now()
+          };
+          this.blockSuccessEvent = topBlockEvent;
+        } else {
+          // 未格挡：攻击方（下方玩家）+1分
+          this.gameData.playerBottom.score++;
+        }
+      }
+    });
+  }
+
+  /**
+   * 检测子弹与挡板是否碰撞
+   */
+  private isBulletPaddleColliding(bullet: BulletState, paddle: PaddleState): boolean {
+    const closestX = Math.max(paddle.x, Math.min(bullet.x, paddle.x + paddle.width));
+    const closestY = Math.max(paddle.y, Math.min(bullet.y, paddle.y + paddle.height));
+    
+    const distanceX = bullet.x - closestX;
+    const distanceY = bullet.y - closestY;
+    const distanceSquared = distanceX * distanceX + distanceY * distanceY;
+    
+    return distanceSquared < bullet.radius * bullet.radius;
+  }
+
+  /**
+   * 检测子弹与弹球是否碰撞
+   */
+  private isBulletBallColliding(bullet: BulletState, ball: BallState): boolean {
+    const dx = bullet.x - ball.x;
+    const dy = bullet.y - ball.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    return distance <= bullet.radius + ball.radius;
+  }
+
+  /**
+   * 应用弹球速度调制
+   */
+  private applyBallSpeedModulation(): void {
+    const ball = this.gameData.ball;
+    const modulation = GameConfig.OFFSET_MODULATION * (Math.random() - 0.5);
+    ball.vx += modulation;
+    ball.vy += modulation;
+  }
+
+  // ==================== 游戏逻辑方法 ====================
+
+  /**
+   * 检查胜利条件
+   */
+  private checkWinCondition(): void {
+    // 单人模式：任一玩家达到胜利分数
+    if (this.gameData.mode === GameMode.Single) {
+      if (this.gameData.playerBottom.score >= GameConfig.WIN_SCORE) {
+        this.endGame(PlayerSide.Bottom);
+      } else if (this.gameData.playerTop && this.gameData.playerTop.score >= GameConfig.WIN_SCORE) {
+        this.endGame(PlayerSide.Top);
+      }
+    }
+    // 双人模式：任一玩家达到胜利分数
+    else if (this.gameData.mode === GameMode.Multi && this.gameData.playerTop) {
+      if (this.gameData.playerBottom.score >= GameConfig.WIN_SCORE) {
+        this.endGame(PlayerSide.Bottom);
+      } else if (this.gameData.playerTop.score >= GameConfig.WIN_SCORE) {
+        this.endGame(PlayerSide.Top);
+      }
+    }
+  }
+
+  /**
+   * 发射子弹
+   * 条件：bulletCount > 0 且游戏状态为 Playing
+   * 发射后 bulletCount 减 1
+   */
+  public shootBullet(side: PlayerSide): boolean {
+    const player = side === PlayerSide.Bottom ? this.gameData.playerBottom : this.gameData.playerTop;
+    
+    if (!player) return false;
+    if (this.gameData.state !== GameState.Playing) return false;
+    if (player.bulletCount <= 0) return false;
+
+    // 消耗子弹
+    player.bulletCount--;
+
+    // 创建子弹
+    const bullet: BulletState = {
+      x: player.paddle.x + player.paddle.width / 2,
+      y: player.paddle.y + (side === PlayerSide.Bottom ? 0 : player.paddle.height),
+      vx: 0,
+      vy: side === PlayerSide.Bottom ? -GameConfig.BULLET_SPEED : GameConfig.BULLET_SPEED,
+      radius: GameConfig.BULLET_RADIUS,
+      active: true,
+      owner: side
+    };
+
+    player.bullets.push(bullet);
+    return true;
+  }
+
+  /**
+   * 尝试格挡
+   * 条件：游戏状态为 Playing，且距上次格挡已超过冷却时间
+   * 成功后开启格挡窗口
+   */
+  public attemptBlock(side: PlayerSide): boolean {
+    const player = side === PlayerSide.Bottom ? this.gameData.playerBottom : this.gameData.playerTop;
+    
+    if (!player) return false;
+    if (this.gameData.state !== GameState.Playing) return false;
+    
+    const currentTime = Date.now();
+    
+    // 检查冷却时间
+    if (currentTime - player.lastBlockTime < GameConfig.BLOCK_COOLDOWN) {
+      return false;
+    }
+    
+    // 记录格挡尝试时间并开启窗口
+    player.lastBlockTime = currentTime;
+    player.blockWindowActive = true;
+    player.blockWindowStartTime = currentTime;
+    
+    return true;
+  }
+
+  /**
+   * 更新格挡窗口状态
+   * 在每帧更新时调用，检查窗口是否过期
+   */
+  private updateBlockWindows(): void {
+    const currentTime = Date.now();
+    
+    // 检查下方玩家
+    if (this.gameData.playerBottom.blockWindowActive) {
+      if (currentTime - this.gameData.playerBottom.blockWindowStartTime >= GameConfig.BLOCK_WINDOW_DURATION) {
+        this.gameData.playerBottom.blockWindowActive = false;
+      }
+    }
+    
+    // 检查上方玩家
+    if (this.gameData.playerTop && this.gameData.playerTop.blockWindowActive) {
+      if (currentTime - this.gameData.playerTop.blockWindowStartTime >= GameConfig.BLOCK_WINDOW_DURATION) {
+        this.gameData.playerTop.blockWindowActive = false;
+      }
+    }
+  }
+  
+  /**
+   * 更新弹球无敌状态
+   * 在每帧更新时调用，检查无敌是否过期
+   */
+  private updateBallInvincibility(): void {
+    const ball = this.gameData.ball;
+    if (ball.invincible) {
+      const currentTime = Date.now();
+      if (currentTime - ball.invincibleStartTime >= GameConfig.BALL_INVINCIBLE_DURATION) {
+        ball.invincible = false;
+      }
+    }
+  }
+
+  /**
+   * 移动挡板
+   */
+  public movePaddle(side: PlayerSide, direction: Direction, distance: number = 10): void {
+    const player = side === PlayerSide.Bottom ? this.gameData.playerBottom : this.gameData.playerTop;
+    
+    if (!player) return;
+    
+    const paddle = player.paddle;
+    
+    if (direction === Direction.LEFT) {
+      paddle.x = Math.max(0, paddle.x - distance);
+    } else if (direction === Direction.RIGHT) {
+      paddle.x = Math.min(this.screenWidth - paddle.width, paddle.x + distance);
+    }
+  }
+
+  /**
+   * 移动挡板到指定位置 (绝对值定位)
+   * 触摸点x坐标映射为挡板中心x，触摸点y坐标限制在挡板的可移动矩形内
+   * @param side 玩家侧边
+   * @param targetX 目标X坐标 (触摸点x)
+   * @param targetY 目标Y坐标 (触摸点y)
+   */
+  public movePaddleTo(side: PlayerSide, targetX: number, targetY: number): void {
+    const player = side === PlayerSide.Bottom ? this.gameData.playerBottom : this.gameData.playerTop;
+    
+    if (!player) return;
+    
+    const paddle = player.paddle;
+    const halfWidth = paddle.width / 2;
+    const halfHeight = paddle.height / 2;
+    
+    // 计算挡板的移动范围
+    // 左右边界：游戏区域边界减去挡板半宽
+    const minX = halfWidth;
+    const maxX = this.screenWidth - halfWidth;
+    
+
+    // 计算挡板的垂直移动范围
+    // 垂直活动范围 = 屏幕高度的 1/8，距屏幕边缘最小 40vp
+    const edgeMargin = 40;  // 距屏幕边缘的最小距离（vp）
+    const verticalRange = this.screenHeight / 8;  // 垂直活动范围（vp）
+    
+    let minY: number;
+    let maxY: number;
+    
+    if (side === PlayerSide.Bottom) {
+      // 下挡板：靠近底部
+      // 距底边 edgeMargin ~ edgeMargin + verticalRange
+      maxY = this.screenHeight - edgeMargin - paddle.height / 2;
+      minY = this.screenHeight - edgeMargin - verticalRange - paddle.height / 2;
+    } else {
+      // 上挡板：靠近顶部
+      // 距顶边 edgeMargin ~ edgeMargin + verticalRange
+      minY = edgeMargin + paddle.height / 2;
+      maxY = edgeMargin + verticalRange + paddle.height / 2;
+    }
+    
+    // 钳位Y坐标到边界范围
+    const clampedY = Math.max(minY, Math.min(maxY, targetY));
+    
+
+
+    
+
+    
+    // 钳位X坐标到边界范围
+    const clampedX = Math.max(minX, Math.min(maxX, targetX));
+    
+    // 计算新位置
+    const newX = clampedX - halfWidth;
+    const newY = clampedY;
+    
+    // 计算速度（基于位置变化）
+    // 注意：这里使用的是瞬时速度，实际速度会在 updatePaddleVelocity 中基于 deltaTime 重新计算
+    paddle.vx = newX - paddle.x;
+    paddle.vy = newY - paddle.y;
+    
+    // 更新上一帧位置
+    paddle.prevX = paddle.x;
+    paddle.prevY = paddle.y;
+    
+    // 更新挡板位置
+    paddle.x = newX;
+    paddle.y = newY;
+  }
+
+  /**
+   * AI控制上挡板
+   * 在单人模式下自动控制上挡板
+   */
+  private updateAI(deltaTime: number): void {
+    // 确保有上挡板
+    if (!this.gameData.playerTop) {
+      return;
+    }
+
+    const ball = this.gameData.ball;
+    const paddle = this.gameData.playerTop.paddle;
+    
+    // 如果弹球不活跃或向上移动，AI不移动
+    if (!ball.active || ball.vy >= 0) {
+      // 弹球向下移动或静止时，AI回到中心位置
+      const centerX = this.screenWidth / 2;
+      const targetX = centerX - paddle.width / 2;
+      const dx = targetX - paddle.x;
+      
+      // 平滑移动到中心
+      const speed = 300; // 像素/秒
+      const moveDistance = Math.sign(dx) * Math.min(Math.abs(dx), speed * deltaTime);
+      paddle.x += moveDistance;
+      
+      // 限制在边界内
+      paddle.x = Math.max(0, Math.min(this.screenWidth - paddle.width, paddle.x));
+      return;
+    }
+    
+    // 预测弹球位置
+    const ballSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+    const timeToReachPaddle = (paddle.y + paddle.height - ball.y) / ball.vy;
+    
+    // 预测弹球到达挡板时的x坐标
+    const predictedX = ball.x + ball.vx * timeToReachPaddle;
+    
+    // 计算挡板中心应该移动到的目标位置
+    const targetCenterX = predictedX;
+    const targetX = targetCenterX - paddle.width / 2;
+    
+    // 限制目标位置在边界内
+    const clampedTargetX = Math.max(0, Math.min(this.screenWidth - paddle.width, targetX));
+    
+    // 计算移动距离
+    const dx = clampedTargetX - paddle.x;
+    
+    // AI反应速度（像素/秒），可以调整难度
+    const aiSpeed = 400;
+    const moveDistance = Math.sign(dx) * Math.min(Math.abs(dx), aiSpeed * deltaTime);
+    
+    // 更新挡板位置
+    paddle.x += moveDistance;
+    
+    // 更新速度（用于物理计算）
+    paddle.vx = moveDistance / deltaTime;
+    paddle.vy = 0;
+    
+    // 更新AI子弹发射逻辑
+    this.updateAIShooting();
+  }
+
+  /**
+   * 更新AI子弹发射逻辑
+   * 当AI拥有子弹时，随机延迟0.2~0.8秒后发射（模拟人类决策）
+   * 避免过于密集的发射
+   */
+  private updateAIShooting(): void {
+    // 确保有上挡板、游戏进行中且为单人模式
+    if (!this.gameData.playerTop || this.gameData.state !== GameState.Playing || this.gameData.mode !== GameMode.Single) {
+      return;
+    }
+
+    const aiPlayer = this.gameData.playerTop;
+    const currentTime = Date.now();
+
+    // 检查AI是否有子弹
+    if (aiPlayer.bulletCount <= 0) {
+      this.aiIsWaitingToShoot = false;
+      return;
+    }
+
+    // 如果正在等待发射，检查延迟是否结束
+    if (this.aiIsWaitingToShoot) {
+      if (currentTime - this.aiLastShotTime >= this.aiNextShotDelay) {
+        // 延迟结束，发射子弹
+        this.shootBullet(PlayerSide.Top);
+        this.aiIsWaitingToShoot = false;
+        this.aiLastShotTime = currentTime;
+        // 设置下一次发射的随机延迟
+        this.aiNextShotDelay = 200 + Math.random() * 600; // 200-800ms
+      }
+      return;
+    }
+
+    // 不在等待状态，随机决定是否开始等待发射
+    // 随机概率：每帧有1%的概率决定发射
+    if (Math.random() < 0.01) {
+      this.aiIsWaitingToShoot = true;
+      this.aiLastShotTime = currentTime;
+      // 设置随机延迟
+      this.aiNextShotDelay = 200 + Math.random() * 600; // 200-800ms
+    }
+  }
+
+  // ==================== 格挡事件轮询 ====================
+
+  /**
+   * 轮询格挡成功事件
+   * GameView 在游戏循环中每帧调用此方法获取格挡成功事件，用于触发视觉反馈
+   * @returns 格挡成功事件（side, x, y），无事件时返回 null
+   */
+  public pollBlockSuccessEvent(): BlockEvent | null {
+    const event = this.blockSuccessEvent;
+    if (event) {
+      this.blockSuccessEvent = null;
+      return event;
+    }
+    return null;
+  }
+
+  // ==================== Getter方法 ====================
+
+  /**
+   * 获取游戏数据
+   */
+  public getGameData(): GameData {
+    return this.gameData;
+  }
+
+  /**
+   * 序列化当前游戏状态为可流转的数据
+   */
+  public serializeState(): string {
+    // 创建简化版本的游戏数据，排除子弹和临时状态
+    const serializableData: any = {
+      gameMode: this.gameData.mode,
+      gameState: this.gameData.state,
+      ball: this.gameData.ball,
+      playerBottom: {
+        side: this.gameData.playerBottom.side,
+        score: this.gameData.playerBottom.score,
+        chargeCount: this.gameData.playerBottom.chargeCount,
+        bulletCount: this.gameData.playerBottom.bulletCount,
+        paddle: this.gameData.playerBottom.paddle,
+        lastBlockTime: this.gameData.playerBottom.lastBlockTime,
+        blockWindowActive: this.gameData.playerBottom.blockWindowActive,
+        blockWindowStartTime: this.gameData.playerBottom.blockWindowStartTime,
+        touchCount: this.gameData.playerBottom.touchCount
+      } as any,
+      timeLeft: this.gameData.timeLeft,
+      isWin: this.gameData.isWin,
+      winner: this.gameData.winner,
+      screenWidth: this.screenWidth,
+      screenHeight: this.screenHeight,
+      timestamp: Date.now()
+    };
+
+    // 添加上方玩家数据（如果存在）
+    if (this.gameData.playerTop) {
+      serializableData.playerTop = {
+        side: this.gameData.playerTop.side,
+        score: this.gameData.playerTop.score,
+        chargeCount: this.gameData.playerTop.chargeCount,
+        bulletCount: this.gameData.playerTop.bulletCount,
+        paddle: this.gameData.playerTop.paddle,
+        lastBlockTime: this.gameData.playerTop.lastBlockTime,
+        blockWindowActive: this.gameData.playerTop.blockWindowActive,
+        blockWindowStartTime: this.gameData.playerTop.blockWindowStartTime,
+        touchCount: this.gameData.playerTop.touchCount
+      } as any;
+    }
+
+    return JSON.stringify(serializableData);
+  }
+
+  /**
+   * 从流转数据恢复游戏状态
+   */
+  public deserializeState(data: string): void {
+    try {
+      const json = JSON.parse(data);
+      
+      if (!json || !json.gameMode || !json.ball || !json.playerBottom) {
+        console.error('Invalid continuation data:', json);
+        return;
+      }
+
+      // 恢复基础游戏数据
+      this.gameData.mode = json.gameMode;
+      this.gameData.state = json.gameState;
+      this.gameData.ball = json.ball;
+      
+      // 恢复玩家数据（清空子弹）
+      this.gameData.playerBottom = {
+        side: json.playerBottom.side,
+        score: json.playerBottom.score,
+        chargeCount: json.playerBottom.chargeCount,
+        bulletCount: json.playerBottom.bulletCount,
+        paddle: json.playerBottom.paddle,
+        bullets: [],
+        lastBlockTime: json.playerBottom.lastBlockTime || 0,
+        blockWindowActive: json.playerBottom.blockWindowActive || false,
+        blockWindowStartTime: json.playerBottom.blockWindowStartTime || 0,
+        touchCount: json.playerBottom.touchCount || 0
+      };
+      
+      if (json.playerTop) {
+        this.gameData.playerTop = {
+          side: json.playerTop.side,
+          score: json.playerTop.score,
+          chargeCount: json.playerTop.chargeCount,
+          bulletCount: json.playerTop.bulletCount,
+          paddle: json.playerTop.paddle,
+          bullets: [],
+          lastBlockTime: json.playerTop.lastBlockTime || 0,
+          blockWindowActive: json.playerTop.blockWindowActive || false,
+          blockWindowStartTime: json.playerTop.blockWindowStartTime || 0,
+          touchCount: json.playerTop.touchCount || 0
+        };
+      } else {
+        this.gameData.playerTop = undefined;
+      }
+      
+      this.gameData.timeLeft = json.timeLeft ?? GameConfig.GAME_DURATION;
+      this.gameData.isWin = json.isWin ?? false;
+      this.gameData.winner = json.winner;
+      
+      // 恢复屏幕尺寸
+      if (json.screenWidth && json.screenHeight) {
+        this.screenWidth = json.screenWidth;
+        this.screenHeight = json.screenHeight;
+      }
+      
+      // 重置AI状态
+      this.aiLastShotTime = 0;
+      this.aiNextShotDelay = 0;
+      this.aiIsWaitingToShoot = false;
+      this.blockSuccessEvent = null;
+      
+    } catch (error) {
+      console.error('Failed to deserialize game state:', error);
+    }
+  }
+
+  /**
+   * 设置流转数据（供EntryAbility调用）
+   */
+  public static setContinuationData(data: Object): void {
+    continuationData = data;
+  }
+
+  /**
+   * 获取流转数据（供GameView调用）
+   */
+  public static getContinuationData(): Object | null {
+    return continuationData;
+  }
+
+  /**
+   * 清除流转数据
+   */
+  public static clearContinuationData(): void {
+    continuationData = null;
+  }
+
+  /**
+   * 获取游戏状态
+   */
+  public getGameState(): GameState {
+    return this.gameData.state;
+  }
+
+  /**
+   * 获取游戏模式
+   */
+  public getGameMode(): GameMode {
+    return this.gameData.mode;
+  }
+
+  /**
+   * 获取弹球状态
+   */
+  public getBall(): BallState {
+    return this.gameData.ball;
+  }
+
+  /**
+   * 获取玩家状态
+   */
+  public getPlayer(side: PlayerSide): PlayerState | undefined {
+    return side === PlayerSide.Bottom ? this.gameData.playerBottom : this.gameData.playerTop;
+  }
+
+  /**
+   * 设置屏幕尺寸
+   */
+  public setScreenSize(width: number, height: number): void {
+    this.screenWidth = width;
+    this.screenHeight = height;
+  }
+
+  /**
+   * 是否游戏进行中
+   */
+  public isPlaying(): boolean {
+    return this.gameData.state === GameState.Playing;
+  }
+
+  /**
+   * 是否游戏结束
+   */
+  public isGameOver(): boolean {
+    return this.gameData.state === GameState.GameOver;
+  }
+}
+
+/**
+ * 导出单例实例
+ */
+export const gameManager = GameManager.getInstance();
