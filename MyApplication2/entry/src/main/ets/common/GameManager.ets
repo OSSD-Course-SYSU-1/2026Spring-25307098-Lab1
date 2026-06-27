@@ -465,9 +465,18 @@ export class GameManager {
     
     // 检测碰撞
     if (this.isBallPaddleColliding(ball, paddle)) {
-      // 检查格挡窗口：如果激活，防守方减1分
+      // 检查格挡窗口：如果激活，对方加1分
       if (player.blockWindowActive) {
-        player.score = Math.max(0, player.score - 1); // 防止负分
+        // 判断对方是谁并加分
+        if (player.side === PlayerSide.Bottom) {
+          // 下方玩家格挡失败，上方玩家加分
+          if (this.gameData.playerTop) {
+            this.gameData.playerTop.score++;
+          }
+        } else {
+          // 上方玩家格挡失败，下方玩家加分
+          this.gameData.playerBottom.score++;
+        }
         player.blockWindowActive = false; // 清除窗口标志，避免重复惩罚
       }
       
@@ -555,8 +564,10 @@ export class GameManager {
       if (!bullet.active) continue;
       
       if (this.isBulletBallColliding(bullet, ball)) {
-        // 攻击方（下方玩家）减1分
-        this.gameData.playerBottom.score = Math.max(0, this.gameData.playerBottom.score - 1);
+        // 对方（上方玩家）加1分
+        if (this.gameData.playerTop) {
+          this.gameData.playerTop.score++;
+        }
         bullet.active = false;
         this.resetBallImmediately();
         return;
@@ -569,8 +580,8 @@ export class GameManager {
         if (!bullet.active) continue;
         
         if (this.isBulletBallColliding(bullet, ball)) {
-          // 攻击方（上方玩家）减1分
-          this.gameData.playerTop!.score = Math.max(0, this.gameData.playerTop!.score - 1);
+          // 对方（下方玩家）加1分
+          this.gameData.playerBottom.score++;
           bullet.active = false;
           this.resetBallImmediately();
           return;
@@ -599,9 +610,8 @@ export class GameManager {
           bullet.active = false; // 销毁子弹
           
           if (this.gameData.playerBottom.blockWindowActive) {
-            // 格挡成功：防守方+1子弹（不超过上限），不扣分
-            this.gameData.playerBottom.bulletCount = 
-              Math.min(this.gameData.playerBottom.bulletCount + 1, GameConfig.BULLET_MAX_COUNT);
+            // 格挡成功：防守方+1分
+            this.gameData.playerBottom.score++;
             this.gameData.playerBottom.blockWindowActive = false; // 清除窗口标志
             // 记录格挡成功事件（用于视觉反馈）
             const bottomBlockEvent: BlockEvent = {
@@ -629,9 +639,8 @@ export class GameManager {
         bullet.active = false; // 销毁子弹
         
         if (this.gameData.playerTop!.blockWindowActive) {
-          // 格挡成功：防守方+1子弹（不超过上限），不扣分
-          this.gameData.playerTop!.bulletCount = 
-            Math.min(this.gameData.playerTop!.bulletCount + 1, GameConfig.BULLET_MAX_COUNT);
+          // 格挡成功：防守方+1分
+          this.gameData.playerTop!.score++;
           this.gameData.playerTop!.blockWindowActive = false; // 清除窗口标志
           // 记录格挡成功事件（用于视觉反馈）
           const topBlockEvent: BlockEvent = {

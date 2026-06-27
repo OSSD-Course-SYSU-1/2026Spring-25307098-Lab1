@@ -45,6 +45,14 @@ interface FloatingTextData {
  * 游戏主场景页面
  * 使用GameManager管理游戏逻辑
  */
+/**
+ * 触摸按下信息接口
+ */
+interface FingerDownInfo {
+  x: number;
+  y: number;
+  time: number;
+}
 @Entry
 @Component
 export default struct GameView {
@@ -76,21 +84,17 @@ export default struct GameView {
   private initialBottomPaddleX: number = 0;
   private initialTopPaddleX: number = 0;
   
-  // 单击检测
-  private touchDownX: number = 0;
-  private touchDownY: number = 0;
-  private touchDownTime: number = 0;
-  private static readonly TAP_THRESHOLD: number = 10; // 单击移动阈值（像素）
-  private static readonly TAP_TIME_THRESHOLD: number = 300; // 单击时间阈值（毫秒）
+  // ==================== 多指触摸跟踪 ====================
+  // 记录每根手指按下时的位置和时间
+  private fingerDownMap: Map<number, FingerDownInfo> = new Map();
+  private static readonly TAP_MOVE_THRESHOLD: number = 10;   // tap 最大允许移动像素
+  private static readonly TAP_TIME_THRESHOLD: number = 300;  // tap 最大允许时间（毫秒）
   
-  // 双击检测
-  private lastTapTime: number = 0;
-  private lastTapY: number = 0;
-  private static readonly DOUBLE_TAP_THRESHOLD: number = 400; // 双击时间阈值（毫秒）
-  
-  // 单击/双击处理定时器
-  private clickTimer: number = -1;
+  // 双击检测（计时器互斥方案：第一次点击启动300ms计时器，超时发射；第二次点击取消发射，触发格挡）
+  private tapTimer: number = -1;
+  private tapCount: number = 0;
   private isWaitingForDoubleTap: boolean = false;
+  private static readonly TAP_MAX_DELAY: number = 300; // 单击/双击判定超时（毫秒），禁止低于200ms或高于400ms
   
   // ==================== 格挡可视化状态 ====================
   @State bottomBlockActive: boolean = false;
@@ -189,8 +193,9 @@ export default struct GameView {
 
   aboutToDisappear() {
     this.stopGameLoop();
-    this.clearClickTimer();
     this.clearBlockTimers();
+    this.resetTapState();
+    this.fingerDownMap.clear();
     GameManager.destroyInstance();
   }
 
@@ -376,128 +381,135 @@ export default struct GameView {
   }
 
   /**
-   * 处理触摸事件
-   * 触摸移动时移动挡板
+   * 统一触摸事件处理
+   * - 多指支持：每根手指独立跟踪，互不干扰
+   * - 挡板拖拽：在 TouchMove 中即时响应（无延迟）
+   * - 单击发射：手指抬起时即时判定、即时发射（无 setTimeout 延迟）
+   * - 双击格挡：跟随后续抬起手指快速追加格挡
    */
   private handleTouch(event: TouchEvent): void {
-    // 检查触摸点数组是否有效
     if (!event.touches || event.touches.length === 0) {
       return;
     }
-    
-    // 获取触摸点坐标 (相对于事件响应组件的左上角)
-    const touchX = event.touches[0].x;
-    const touchY = event.touches[0].y;
-    
+
+    // === Phase 1: 手指按下 — 记录每根手指的位置和时间 ===
     if (event.type === TouchType.Down) {
-      // 记录按下位置和时间
-      this.touchDownX = touchX;
-      this.touchDownY = touchY;
-      this.touchDownTime = Date.now();
-      return;
-    }
-    
-    if (event.type === TouchType.Up) {
-      // 检测是否为单击
-      const moveDistance = Math.sqrt(
-        Math.pow(touchX - this.touchDownX, 2) + 
-        Math.pow(touchY - this.touchDownY, 2)
-      );
-      const elapsedTime = Date.now() - this.touchDownTime;
-      
-      // 单击条件：移动距离小于阈值且时间小于阈值
-      if (moveDistance < GameView.TAP_THRESHOLD &&
-          elapsedTime < GameView.TAP_TIME_THRESHOLD) {
-        const currentTime = Date.now();
-        const tapY = this.touchDownY;
-        
-        // 清除之前的定时器（如果有）
-        this.clearClickTimer();
-        
-        // 检测是否为双击
-        if (currentTime - this.lastTapTime < GameView.DOUBLE_TAP_THRESHOLD) {
-          // 双击：触发格挡
-          this.handleDoubleTapBlock(tapY);
-          // 重置双击检测
-          this.lastTapTime = 0;
-          this.isWaitingForDoubleTap = false;
-        } else {
-          // 第一次单击：记录时间并设置定时器
-          this.lastTapTime = currentTime;
-          this.lastTapY = tapY;
-          this.isWaitingForDoubleTap = true;
-          
-          // 设置定时器，在双击时间阈值后执行单击动作
-          this.clickTimer = setTimeout(() => {
-            // 如果仍然在等待双击确认，则执行单击动作
-            if (this.isWaitingForDoubleTap) {
-              this.handleTapShoot(tapY);
-              this.isWaitingForDoubleTap = false;
-            }
-            this.clickTimer = -1;
-          }, GameView.DOUBLE_TAP_THRESHOLD);
-        }
-        return;
+      for (let i = 0; i < event.touches.length; i++) {
+        const touch = event.touches[i];
+        this.fingerDownMap.set(touch.id, {
+          x: touch.x,
+          y: touch.y,
+          time: Date.now()
+        });
       }
       return;
     }
-    
-    // 处理触摸移动事件
-    if (event.type !== TouchType.Move) {
+
+    // === Phase 2: 手指滑动 — 挡板拖拽（即时响应，无延迟） ===
+    if (event.type === TouchType.Move) {
+      for (let i = 0; i < event.touches.length; i++) {
+        const touch = event.touches[i];
+        this.handlePaddleMove(touch.x, touch.y);
+
+        // 如果手指移动量超过阈值，撤消其 tap 资格
+        const down = this.fingerDownMap.get(touch.id);
+        if (down) {
+          const dist = Math.hypot(touch.x - down.x, touch.y - down.y);
+          if (dist > GameView.TAP_MOVE_THRESHOLD) {
+            this.fingerDownMap.delete(touch.id);
+          }
+        }
+      }
       return;
     }
-    
-    // 根据游戏模式决定移动哪个挡板
+
+    // === Phase 3: 手指抬起 — 单击/双击检测（即时触发，无 setTimeout） ===
+    if (event.type === TouchType.Up) {
+      for (let i = 0; i < event.touches.length; i++) {
+        const touch = event.touches[i];
+        const down = this.fingerDownMap.get(touch.id);
+        if (!down) {
+          continue;
+        }
+
+        const elapsed = Date.now() - down.time;
+        const moved = Math.hypot(touch.x - down.x, touch.y - down.y);
+
+        // 判定条件：未显著移动 + 在时间阈值内 = 有效点击
+        if (moved < GameView.TAP_MOVE_THRESHOLD &&
+            elapsed < GameView.TAP_TIME_THRESHOLD) {
+          const tapY = down.y;
+          this.tapCount++;
+
+          if (this.tapCount === 1) {
+            // 第一次点击：启动计时器，等待第二次点击
+            this.isWaitingForDoubleTap = true;
+            this.tapTimer = setTimeout(() => {
+              // 超时未双击 → 视为单击 → 发射子弹
+              if (this.isWaitingForDoubleTap) {
+                this.fireBullet(tapY);
+                this.resetTapState();
+              }
+            }, GameView.TAP_MAX_DELAY);
+          } else if (this.tapCount === 2) {
+            // 第二次点击 → 取消待执行的发射任务，触发格挡
+            if (this.tapTimer !== -1) {
+              clearTimeout(this.tapTimer);
+              this.tapTimer = -1;
+            }
+            this.isWaitingForDoubleTap = false;
+            this.tapCount = 0;
+            this.handleDoubleTapBlock(tapY);
+          } else {
+            // 超出2次，重置状态（安全兜底）
+            this.resetTapState();
+          }
+        }
+
+        this.fingerDownMap.delete(touch.id);
+      }
+      return;
+    }
+  }
+
+  /**
+   * 处理挡板拖拽（独立方法，与点击检测互不阻塞）
+   */
+  private handlePaddleMove(x: number, y: number): void {
     if (this.gameMode === GameMode.Single) {
-      // 单人模式：移动下挡板
-      this.gameManager.movePaddleTo(PlayerSide.Bottom, touchX, touchY);
-      
-      // 更新UI状态
+      this.gameManager.movePaddleTo(PlayerSide.Bottom, x, y);
       this.updateUIState();
-      
-      // 检测挡板移动并自动开始游戏
-      if (!this.bottomPaddleMoved && 
+
+      if (!this.bottomPaddleMoved &&
           Math.abs(this.bottomPaddleX - this.initialBottomPaddleX) > 5) {
         this.bottomPaddleMoved = true;
-        // 单人模式：挡板移动即开始游戏
         if (this.gameState === GameState.Paused && !this.ballActive) {
           this.handleStartGame();
         }
       }
     } else {
-      // 多人模式：根据触摸点纵坐标判断上半区还是下半区
       const midY = this.screenHeight / 2;
-      
-      if (touchY < midY) {
-        // 上半区：移动上挡板
-        this.gameManager.movePaddleTo(PlayerSide.Top, touchX, touchY);
-        
-        // 更新UI状态
+
+      if (y < midY) {
+        this.gameManager.movePaddleTo(PlayerSide.Top, x, y);
         this.updateUIState();
-        
-        // 检测上挡板移动
-        if (!this.topPaddleMoved && 
+
+        if (!this.topPaddleMoved &&
             Math.abs(this.topPaddleX - this.initialTopPaddleX) > 5) {
           this.topPaddleMoved = true;
-          // 双人模式：两个挡板都移动才开始游戏
-          if (this.bottomPaddleMoved && 
+          if (this.bottomPaddleMoved &&
               this.gameState === GameState.Paused && !this.ballActive) {
             this.handleStartGame();
           }
         }
       } else {
-        // 下半区：移动下挡板
-        this.gameManager.movePaddleTo(PlayerSide.Bottom, touchX, touchY);
-        
-        // 更新UI状态
+        this.gameManager.movePaddleTo(PlayerSide.Bottom, x, y);
         this.updateUIState();
-        
-        // 检测下挡板移动
-        if (!this.bottomPaddleMoved && 
+
+        if (!this.bottomPaddleMoved &&
             Math.abs(this.bottomPaddleX - this.initialBottomPaddleX) > 5) {
           this.bottomPaddleMoved = true;
-          // 双人模式：两个挡板都移动才开始游戏
-          if (this.topPaddleMoved && 
+          if (this.topPaddleMoved &&
               this.gameState === GameState.Paused && !this.ballActive) {
             this.handleStartGame();
           }
@@ -505,60 +517,56 @@ export default struct GameView {
       }
     }
   }
-  
+
   /**
-   * 处理单击发射子弹
+   * 发射子弹（仅由单击计时器回调调用，双击时通过重置状态禁止调用）
    * @param tapY 单击位置的Y坐标
    */
-  private handleTapShoot(tapY: number): void {
-    // 根据游戏模式决定发射哪个玩家的子弹
+  private fireBullet(tapY: number): void {
     if (this.gameMode === GameMode.Single) {
-      // 单人模式：只发射下方玩家的子弹
       this.gameManager.shootBullet(PlayerSide.Bottom);
     } else {
-      // 多人模式：根据单击位置判定半场
       const midY = this.screenHeight / 2;
-      
       if (tapY < midY) {
-        // 上半区：发射上方玩家的子弹
         this.gameManager.shootBullet(PlayerSide.Top);
       } else {
-        // 下半区：发射下方玩家的子弹
         this.gameManager.shootBullet(PlayerSide.Bottom);
       }
     }
-    
-    // 更新UI状态
-    this.updateUIState();
-  }
-  
-  /**
-   * 处理双击格挡
-   * @param tapY 双击位置的Y坐标
-   */
-  private handleDoubleTapBlock(tapY: number): void {
-    // 根据游戏模式决定哪个玩家格挡
-    if (this.gameMode === GameMode.Single) {
-      // 单人模式：只有下方玩家格挡
-      this.gameManager.attemptBlock(PlayerSide.Bottom);
-    } else {
-      // 多人模式：根据双击位置判定半场
-      const midY = this.screenHeight / 2;
-      
-      if (tapY < midY) {
-        // 上半区：上方玩家格挡
-        this.gameManager.attemptBlock(PlayerSide.Top);
-      } else {
-        // 下半区：下方玩家格挡
-        this.gameManager.attemptBlock(PlayerSide.Bottom);
-      }
-    }
-    
-    // 更新UI状态
     this.updateUIState();
   }
 
-  // ==================== 格挡视觉效果更新 ====================
+  /**
+   * 重置双击检测状态（清除计时器，防止残余发射任务执行）
+   */
+  private resetTapState(): void {
+    if (this.tapTimer !== -1) {
+      clearTimeout(this.tapTimer);
+      this.tapTimer = -1;
+    }
+    this.tapCount = 0;
+    this.isWaitingForDoubleTap = false;
+  }
+
+  /**
+   * 处理双击格挡（触发时先清除待执行的发射计时器，确保双击不发射子弹）
+   * @param tapY 双击位置的Y坐标
+   */
+  private handleDoubleTapBlock(tapY: number): void {
+    // 清除任何待执行的发射任务，确保双击只触发格挡，禁止发射子弹
+    this.resetTapState();
+    if (this.gameMode === GameMode.Single) {
+      this.gameManager.attemptBlock(PlayerSide.Bottom);
+    } else {
+      const midY = this.screenHeight / 2;
+      if (tapY < midY) {
+        this.gameManager.attemptBlock(PlayerSide.Top);
+      } else {
+        this.gameManager.attemptBlock(PlayerSide.Bottom);
+      }
+    }
+    this.updateUIState();
+  }  // ==================== 格挡视觉效果更新 ====================
 
   /**
    * 每帧更新格挡视觉效果
@@ -845,17 +853,7 @@ export default struct GameView {
     .height('100%')
   }
 
-  /**
-   * 清除单击定时器
-   */
-  private clearClickTimer(): void {
-    if (this.clickTimer !== -1) {
-      clearTimeout(this.clickTimer);
-      this.clickTimer = -1;
-    }
-    this.isWaitingForDoubleTap = false;
   }
-}
 
 /**
  * 子弹项组件
